@@ -7,25 +7,28 @@ from itertools import product
 combinations = []
 
 types = {
-    "Bed":[
-       "First"
+    "Bed": [
+        "16770Dp",
+        "Nantucket chaise",
+        "2308s",
+        "Savanah alumnium chase"
     ],
-    "Umbrella":[
-     "Big",
-     "Small"
+    "Umbrella": [
+        "Outdoor Umbrella 01",
+        "Outdoor Umbrella 02"
     ],
-    "Table":[
-       "Square",
-       "Round"
+    "Table": [
+        "Side Table 042",
+        "Side Table 129",
+        "Side Table 106",
+        "Side Table 100"
     ]
 }
-
 
 def sort_by_length(category):
     return len(types[category])
 
 sorted_categories = sorted(types.keys(), key=sort_by_length)
-
 
 for combo in product(*(types[obj] for obj in sorted_categories)):
     combinations.append(" - ".join(combo))
