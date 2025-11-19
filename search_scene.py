@@ -8,16 +8,16 @@ import zipfile
 import time
 from typing import List, Dict, Any, Optional
 
-BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYzMTgwMzE3LCJpYXQiOjE3NjMwOTM5MTcsImp0aSI6Ijg4Y2VmNjIzNTllMTQ3NjZhZTdlNTVmZmQyZDM4ZGYyIiwidXNlcl9pZCI6NjYyMiwibWVtYmVyIjoxMDc4MSwib3JnYW5pemF0aW9uIjo3MzY5LCJpc19lbWFpbF92ZXJpZmllZCI6dHJ1ZSwiYXBwX3R5cGUiOiJiYXNlIn0.yRwCb3wjYt6llJ9GGHBUqm0HxeZXfyARD_8XouW1VCQ"
-CONFIGURATOR_ID = "4807"
+BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYzNDY1OTgwLCJpYXQiOjE3NjMzNzk1ODAsImp0aSI6Ijg1OTVkYWQyNmM5NzQxMWNhM2Y0YzY5MzQxNzVlYWY4IiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.ajwXDdIoHQE_m4l9YyXvF5asJYu39gSM2pBBTz7iUQ0"
+CONFIGURATOR_ID = "7050"
 
 SCENE_DATA_URL = f"https://prod.imagine.io/configurator/api/v2/config-scene/?configurator={CONFIGURATOR_ID}&page=1"
 
-SCENE_ID_LIST = ["20805"]
-SCENE_OPTION_ID_LIST = ["39931"]
-TEXTURE_SEARCH_TERMS = ["White"]
+SCENE_ID_LIST = ["20805"] ## Scene ID
+SCENE_OPTION_ID_LIST = ["49009"] ## Lable ID
+TEXTURE_SEARCH_TERMS = ["Blue"] ## Texture search terms
 
-PUBLIC_TOKEN = "de6627c1-de02-3225-8d83-e06ceae99b4c"
+PUBLIC_TOKEN = "00c61faa-6c46-3d56-ad03-5a29263d30c9"
 RENDER_DOWNLOAD_API_URL = "https://prod.imagine.io/configurator/api/v2/configurator-images-download/"
 CONFIG_PUBLIC_DATA_URL = f"https://prod.imagine.io/configurator/api/v2/v3/config-public-data/{CONFIGURATOR_ID}/?is_render=true&page=1"
 
@@ -57,6 +57,7 @@ def get_paginated_data(session: requests.Session, start_url: str) -> List[Dict[s
             try:
                 response = session.get(current_url)
                 response.raise_for_status()
+                # If successful, break retry loop
                 break 
             except requests.exceptions.HTTPError as http_err:
                 retries -= 1
@@ -154,25 +155,31 @@ def get_paginated_data(session: requests.Session, start_url: str) -> List[Dict[s
     print(f"Fetch complete. Total items fetched: {len(all_results)}")
     return all_results
 
-def _process_scene_products(item: Dict[str, Any]) -> List[Dict[str, Any]]:
-    products = []
+def _process_scene_products(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     scene_id = str(item.get("id"))
     scene_name = item.get("name", "")
     sceneproduct_list = item.get("sceneproduct_data", [])
 
     if not (sceneproduct_list and isinstance(sceneproduct_list, list)):
-        return []
+        return None
 
+    products_data = []
     for idx, product_data in enumerate(sceneproduct_list):
         if isinstance(product_data, dict):
-            products.append({
-                "scene_id": scene_id,
-                "scene_name": scene_name,
+            products_data.append({
                 "sceneproduct_num": idx,
                 "sceneproduct_data_name": product_data.get("name", ""),
                 "sceneproduct_data_product_id": str(product_data.get("product", "")) if product_data.get("product") else None
             })
-    return products
+    
+    if not products_data:
+        return None
+
+    return {
+        "scene_id": scene_id,
+        "scene_name": scene_name,
+        "sceneproduct_data": products_data
+    }
 
 def search_public_scenes(all_items: List[Dict[str, Any]]):
     if not all_items:
@@ -197,12 +204,14 @@ def search_public_scenes(all_items: List[Dict[str, Any]]):
         item_name = item.get("name", "")
         
         if search_term == '*' or search_term_lower in item_name.lower():
-            matches_store.extend(_process_scene_products(item))
+            scene_data = _process_scene_products(item)
+            if scene_data:
+                matches_store.append(scene_data)
 
     if not matches_store:
         print(f"--- No matches found for '{search_term}' ---")
     else:
-        print(f"\n--- Found {len(matches_store)} match(es) for '{search_term}' ---\n")
+        print(f"\n--- Found {len(matches_store)} scene(s) with matching products for '{search_term}' ---\n")
         print(json.dumps(matches_store, indent=4))
 
 def search_scene_textures(all_items: List[Dict[str, Any]], search_terms_list: List[str]):
@@ -222,7 +231,7 @@ def search_scene_textures(all_items: List[Dict[str, Any]], search_terms_list: Li
                 "data_id": str(item.get("data", {}).get("id")) if item.get("data") else None,
                 "sceneoption": str(item.get("sceneoption")) if item.get("sceneoption") else None,
                 "scene_id": str(item.get("fetched_for_scene_id")) if item.get("fetched_for_scene_id") else None,
-                # "tiling": [f"x: {item_tiling_value_x}", f"y: {item_tiling_value_y}"] if item_tiling_value_x is not None and item_tiling_value_y is not None else None
+                "tiling": [f"x: {item_tiling_value_x}", f"y: {item_tiling_value_y}"] if item_tiling_value_x is not None and item_tiling_value_y is not None else None
             }
             all_texture_data.append(match_data)
         
@@ -231,6 +240,7 @@ def search_scene_textures(all_items: List[Dict[str, Any]], search_terms_list: Li
         print(json.dumps(all_texture_data, indent=4))
         return
 
+    # EXACT match logic for Option 2
     lower_to_original_term = {term.lower(): term for term in search_terms_list}
     search_terms_lower_set = set(lower_to_original_term.keys())
 
@@ -245,14 +255,14 @@ def search_scene_textures(all_items: List[Dict[str, Any]], search_terms_list: Li
         item_tiling_value_x = item.get("material_properties", {}).get("tilingOffsetValue", {}).get("_MainTex", {}).get("xMatTiling", None)
         item_tiling_value_y = item.get("material_properties", {}).get("tilingOffsetValue", {}).get("_MainTex", {}).get("yMatTiling", None)
         
-        if item_display_name_lower in search_terms_lower_set:
+        if item_display_name_lower in search_terms_lower_set: # <-- This is an EXACT match
             match_data = {
                 "display_name": item_display_name,
                 "id": str(item.get("id")),
                 "data_id": str(item.get("data", {}).get("id")) if item.get("data") else None,
                 "sceneoption": str(item.get("sceneoption")) if item.get("sceneoption") else None,
                 "scene_id": str(item.get("fetched_for_scene_id")) if item.get("fetched_for_scene_id") else None,
-                # "tiling": [f"x: {item_tiling_value_x}", f"y: {item_tiling_value_y}"] if item_tiling_value_x is not None and item_tiling_value_y is not None else None
+                "tiling": [f"x: {item_tiling_value_x}", f"y: {item_tiling_value_y}"] if item_tiling_value_x is not None and item_tiling_value_y is not None else None
             }
             original_term = lower_to_original_term[item_display_name_lower]
             results_json[original_term].append(match_data)
@@ -485,7 +495,7 @@ def main():
                         # Fetch all options for the store
                         current_fetch += 1
                         print(f"\n--- Fetching {current_fetch}/{total_fetches}: store={store} (all options) ---")
-                        public_texture_url = f"httpss://prod.imagine.io/configurator/api/v2/scenetexture-public-data/?token={PUBLIC_TOKEN}&store_id={store}&is_public=false&page=1"
+                        public_texture_url = f"https://prod.imagine.io/configurator/api/v2/scenetexture-public-data/?token={PUBLIC_TOKEN}&store_id={store}&is_public=false&page=1"
                         texture_data = get_paginated_data(session, public_texture_url)
                         for item in texture_data:
                             item['fetched_for_store_id'] = store
@@ -495,7 +505,7 @@ def main():
                         for option_id in SCENE_OPTION_ID_LIST:
                             current_fetch += 1
                             print(f"\n--- Fetching {current_fetch}/{total_fetches}: store={store}, sceneoption={option_id} ---")
-                            public_texture_url = f"httpss://prod.imagine.io/configurator/api/v2/scenetexture-public-data/?token={PUBLIC_TOKEN}&store_id={store}&sceneoption_id={option_id}&is_public=false&page=1"
+                            public_texture_url = f"https://prod.imagine.io/configurator/api/v2/scenetexture-public-data/?token={PUBLIC_TOKEN}&store_id={store}&sceneoption_id={option_id}&is_public=false&page=1"
                             texture_data = get_paginated_data(session, public_texture_url)
                             for item in texture_data:
                                 item['fetched_for_store_id'] = store
