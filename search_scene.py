@@ -11,15 +11,15 @@ from typing import List, Dict, Any, Optional
 BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYzNDY1OTgwLCJpYXQiOjE3NjMzNzk1ODAsImp0aSI6Ijg1OTVkYWQyNmM5NzQxMWNhM2Y0YzY5MzQxNzVlYWY4IiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.ajwXDdIoHQE_m4l9YyXvF5asJYu39gSM2pBBTz7iUQ0"
 CONFIGURATOR_ID = "7050"
 
-SCENE_DATA_URL = f"https://prod.imagine.io/configurator/api/v2/config-scene/?configurator={CONFIGURATOR_ID}&page=1"
-
 SCENE_ID_LIST = ["20805"] ## Scene ID
 SCENE_OPTION_ID_LIST = ["49009"] ## Lable ID
 TEXTURE_SEARCH_TERMS = ["Blue"] ## Texture search terms
 
 PUBLIC_TOKEN = "00c61faa-6c46-3d56-ad03-5a29263d30c9"
-RENDER_DOWNLOAD_API_URL = "https://prod.imagine.io/configurator/api/v2/configurator-images-download/"
-CONFIG_PUBLIC_DATA_URL = f"https://prod.imagine.io/configurator/api/v2/v3/config-public-data/{CONFIGURATOR_ID}/?is_render=true&page=1"
+BASE_URL = "https://prod.imagine.io/configurator/api/v2/"
+SCENE_DATA_URL = f"{BASE_URL}config-scene/?configurator={CONFIGURATOR_ID}&page=1"
+RENDER_DOWNLOAD_API_URL = f"{BASE_URL}configurator-images-download/"
+CONFIG_PUBLIC_DATA_URL = f"{BASE_URL}v3/config-public-data/{CONFIGURATOR_ID}/?is_render=true&page=1"
 
 DEFAULT_HEADERS = {
     "Authorization": f"Bearer {BEARER_TOKEN}",
