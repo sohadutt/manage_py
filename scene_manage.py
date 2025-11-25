@@ -5,18 +5,33 @@ import json
 import time
 from typing import List, Dict, Any, Optional
 
-BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYzNjE3NDg2LCJpYXQiOjE3NjM1MzEwODYsImp0aSI6ImFlMTI5ZmI5MTM1ZTQ2MmZiNzVkNmFhODM1YjUxYzIxIiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.UzgMx7gAZBqVo5gAfCbSm6GYUmJTKl1TtxASPiPmYrk"
+# --- CONFIGURATION ---
+BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0MTQyMjQ5LCJpYXQiOjE3NjQwNTU4NDksImp0aSI6IjFhNmE4MjY4MGNkMzRhNGU5OTZhOThjMDNhNzNlYzIwIiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.K87pkY6GdvmN26HdFqEYatjBTc1McE_XTQkJBRM6TmU"
 CONFIGURATOR_ID = "7049"
 
-REQUEST_DELAY = 0.5
-
-# If empty, script will fetch ALL scenes.
+# If empty, script will fetch ALL scenes from the configurator.
 SCENE_ID_LIST = [] 
-SCENE_OPTION_ID_LIST = ["48988"]
-TEXTURE_SEARCH_TERMS = ["Navy Blue"]
+SCENE_OPTION_ID_LIST = ["48988"] # Leave empty to fetch all options per scene
+TEXTURE_SEARCH_TERMS = ["Black"] # Display Name (substring match)
 
-SCENE_DATA_URL = f"https://prod.imagine.io/configurator/api/v2/config-scene/?configurator={CONFIGURATOR_ID}&page=1"
-PATCH_SCENE_TEXTURE_URL = "https://prod.imagine.io/configurator/api/v2/scene-texture/"
+# Resolution Settings
+RENDER_CONFIG = {
+    "aspect_ratio": "1.33",
+    "high_reso_x": 3000, "high_reso_y": 2250,
+    "low_reso_x": 1500, "low_reso_y": 1125,
+    "compressed_reso_x": 1500, "compressed_reso_y": 1125,
+    "bg_reso_x": 3000, "bg_reso_y": 2250,
+    "preview_reso_x": 1500, "preview_reso_y": 1125,
+    "render_reso_x": 3000, "render_reso_y": 2250
+}
+
+# --- CONSTANTS ---
+BASE_URL = "https://prod.imagine.io/configurator/api/v2"
+SCENE_LIST_URL = f"{BASE_URL}/config-scene/?configurator={CONFIGURATOR_ID}&page=1"
+RENDER_URL = f"{BASE_URL}/scene-texture-render/"
+PATCH_URL = f"{BASE_URL}/scene-texture/"
+DETAILS_URL = f"{BASE_URL}/scene/details/{{scene_id}}/"
+VIEWS_URL = f"{BASE_URL}/scene-view/?scene={{scene_id}}"
 
 DEFAULT_HEADERS = {
     "Authorization": f"Bearer {BEARER_TOKEN}",
@@ -26,331 +41,299 @@ DEFAULT_HEADERS = {
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0"
 }
 
-def get_paginated_data(session: requests.Session, start_url: str) -> List[Dict[str, Any]]:
+# --- UI HELPERS ---
+def print_header(title: str):
+    print(f"\n{'='*60}")
+    print(f" {title}")
+    print(f"{'='*60}")
+
+def print_progress(iteration, total, prefix='', suffix='', decimals=1, length=40):
+    """Call in a loop to create terminal progress bar"""
+    if total == 0:
+        return
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filled_length = int(length * iteration // total)
+    bar = '█' * filled_length + '-' * (length - filled_length)
+    sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix}')
+    if iteration == total:
+        sys.stdout.write('\n')
+    sys.stdout.flush()
+
+# --- NETWORK HELPERS ---
+def get_paginated_data(session: requests.Session, start_url: str, description: str = "Fetching data") -> List[Dict[str, Any]]:
     all_results = []
     current_url = start_url
-    base_url = start_url.split('?')[0]
-    print(f"Starting data fetch from: {base_url}")
-
-    total_items = 0
-    items_fetched = 0
-    is_first_page = True
-    page_number = 1
-
+    
+    # First request to get total count
     try:
-        parsed_url = urllib.parse.urlparse(start_url)
-        query_params = urllib.parse.parse_qs(parsed_url.query)
-        if 'page' in query_params:
-            page_number = int(query_params['page'][0])
-    except (ValueError, IndexError):
-        page_number = 1
+        init_resp = session.get(current_url)
+        init_resp.raise_for_status()
+        data = init_resp.json()
+        total_count = data.get("count", 0)
+        all_results.extend(data.get("results", []))
+        current_url = data.get("next_link")
+    except Exception as e:
+        print(f"Error initializing fetch: {e}")
+        return []
 
+    if total_count == 0:
+        return all_results
+
+    # Loop for remaining pages
     while current_url:
-        # --- THROTTLE: Wait before making the request ---
-        time.sleep(REQUEST_DELAY)
+        print_progress(len(all_results), total_count, prefix=description, suffix=f"({len(all_results)}/{total_count})")
         
-        retries = 3
-        delay = 1
-        response = None
-        
-        while retries > 0:
-            try:
-                response = session.get(current_url)
-                response.raise_for_status()
-                break 
-            except requests.exceptions.HTTPError as http_err:
-                retries -= 1
-                if response is not None and response.status_code in [500, 502, 503, 504]:
-                    print(f"\nServer error ({http_err}). Retrying in {delay}s... ({retries} retries left)")
-                    time.sleep(delay)
-                    delay *= 2 
-                else:
-                    print(f"\nHTTP error occurred: {http_err}")
-                    if response is not None and response.status_code in [401, 403]:
-                        print("\n--- CRITICAL ERROR ---")
-                        print("Token might be expired or invalid. Please update BEARER_TOKEN.")
-                    current_url = None
-                    break
-            except requests.exceptions.RequestException as err:
-                retries -= 1
-                print(f"\nA request error occurred: {err}. Retrying in {delay}s... ({retries} retries left)")
-                time.sleep(delay)
-                delay *= 2
-        
-        if not current_url:
-            break
-
-        if retries == 0 and (response is None or (response is not None and response.status_code >= 500)):
-            print(f"Failed to fetch {current_url} after multiple retries. Skipping this URL.")
-            break
-
-        if response is None:
-            print(f"\nNo response received for {current_url}. Skipping.")
-            break
-
         try:
-            data = response.json()
-        except json.JSONDecodeError:
-            print(f"\nFailed to decode JSON from {current_url}. Skipping.")
+            resp = session.get(current_url)
+            resp.raise_for_status()
+            data = resp.json()
+            all_results.extend(data.get("results", []))
+            current_url = data.get("next_link")
+        except Exception:
+            # Simple retry logic could go here
             break
 
-        page_results = data.get("results", [])
-        
-        if is_first_page:
-            total_items = data.get("count", 0)
-            is_first_page = False
-            if not page_results and not total_items:
-                print("No results found.")
-                break
-            if not total_items and page_results:
-                print("Total item count not available. Progress bar will not be shown.")
-        
-        if page_results:
-            all_results.extend(page_results)
-            items_fetched += len(page_results)
-            
-            if total_items > 0:
-                percentage = (items_fetched / total_items) * 100
-                bar_length = 40
-                filled_length = int(bar_length * items_fetched // total_items)
-                bar = '█' * filled_length + '-' * (bar_length - filled_length)
-                sys.stdout.write(f'\rProgress: |{bar}| {items_fetched}/{total_items} ({percentage:.1f}%)')
-                sys.stdout.flush()
-            else:
-                print(f"Fetched page with {len(page_results)} results (Total: {items_fetched})")
-        
-        next_link = data.get("next_link")
-        if next_link:
-            current_url = next_link
-            try:
-                parsed_link = urllib.parse.urlparse(next_link)
-                query_params = urllib.parse.parse_qs(parsed_link.query)
-                if 'page' in query_params:
-                    page_number = int(query_params['page'][0])
-            except (ValueError, IndexError):
-                pass 
-        
-        elif items_fetched < total_items and total_items > 0:
-            if total_items > 0:
-                sys.stdout.write('\n')
-                sys.stdout.flush()
-            print("No 'next_link' found, manually incrementing page...")
-            
-            page_number += 1
-            
-            parsed_start_url = urllib.parse.urlparse(start_url)
-            query_params = urllib.parse.parse_qs(parsed_start_url.query)
-            query_params['page'] = [str(page_number)]
-            new_query = urllib.parse.urlencode(query_params, doseq=True)
-            current_url = urllib.parse.urlunparse(parsed_start_url._replace(query=new_query))
-            print(f"Fetching next page: {page_number}")
-        else:
-            current_url = None
-
-    if total_items > 0:
-        sys.stdout.write('\n')
-        sys.stdout.flush()
-
-    print(f"Fetch complete. Total items fetched: {len(all_results)}")
+    print_progress(total_count, total_count, prefix=description, suffix="Complete")
     return all_results
 
-def patch_scene_texture(
-    session: requests.Session, 
-    texture_id: str, 
-    data_id: Optional[str], 
-    field_name: str, 
-    field_value: bool, 
-    item_name: str, 
-    scene_id: Optional[str], 
-    configurator_id: str
-) -> bool:
+def get_scene_ancillary_data(session: requests.Session, scene_id: str) -> Dict[str, Any]:
+    """Fetches JSON blob, Store ID, and View ID for a specific scene."""
+    result: Dict[str, Any] = {"json_content": None, "store_id": None, "sceneview_id": None}
     
-    url = f"{PATCH_SCENE_TEXTURE_URL}{texture_id}/"
+    print(f"   > Resolving details for Scene {scene_id}...")
 
-    # --- CONSTRUCT MULTIPART FORM DATA ---
-    
-    # 1. Prepare the nested 'data' JSON object
-    # Use the field_name variable to set either 'is_enable' or 'is_updated' dynamically
-    nested_json_data = {
-        "id": int(data_id) if data_id and data_id.isdigit() else None,
-        "scene_id": int(scene_id) if scene_id and scene_id.isdigit() else None,
-        field_name: field_value
-    }
-
-    multipart_data = {
-        'id': (None, str(texture_id)),
-        'configurator': (None, str(configurator_id)),
-        field_name: (None, 'true' if field_value else 'false'),
-        'data': (None, json.dumps(nested_json_data))
-    }
-
+    # 1. Details & JSON
     try:
-        response = session.patch(url, files=multipart_data)
-        response.raise_for_status()
+        resp = session.get(DETAILS_URL.format(scene_id=scene_id))
+        resp.raise_for_status()
+        details = resp.json()
+        result["store_id"] = str(details.get("store", "18340")) # Fallback ID
+        
+        if details.get("json_file"):
+            file_resp = session.get(details["json_file"])
+            file_resp.raise_for_status()
+            result["json_content"] = file_resp.content
+        else:
+            print("     [!] Scene has no JSON file.")
+            return result # Abort early if no JSON
+    except Exception as e:
+        print(f"     [!] Details Error: {e}")
+        return result
+
+    # 2. Scene View
+    try:
+        resp = session.get(VIEWS_URL.format(scene_id=scene_id))
+        resp.raise_for_status()
+        views = resp.json().get("results", [])
+        if views:
+            result["sceneview_id"] = str(views[0].get("id"))
+        else:
+            result["sceneview_id"] = scene_id # Fallback
+    except Exception:
+        result["sceneview_id"] = scene_id
+
+    return result
+
+# --- ACTIONS ---
+def patch_texture_property(session, item, field, value):
+    url = f"{PATCH_URL}{item['id']}/"
+    nested_data = {
+        "id": int(item['data_id']) if item['data_id'] else None,
+        "scene_id": int(item['scene_id']) if item['scene_id'] else None,
+        field: value
+    }
+    payload = {
+        'id': (None, str(item['id'])),
+        'configurator': (None, CONFIGURATOR_ID),
+        field: (None, 'true' if value else 'false'),
+        'data': (None, json.dumps(nested_data))
+    }
+    try:
+        r = session.patch(url, files=payload)
+        r.raise_for_status()
         return True
-    except requests.exceptions.RequestException as e:
-        print(f"\n  [ERROR] Failed to update '{field_name}' for '{item_name}' (ID: {texture_id}): {e}")
-        if hasattr(e, 'response') and e.response is not None:
-             print(f"     Response: {e.response.text}")
+    except:
         return False
 
-def process_and_patch_textures(
-    session: requests.Session, 
-    all_items: List[Dict[str, Any]], 
-    search_terms_list: List[str], 
-    target_field: str,
-    target_value: bool
-):
-    if not all_items:
-        print("No data to process.")
-        return
-        
-    if not search_terms_list:
-        print("No search terms provided. Skipping patch process.")
-        return
+def send_render_request(session, item, ancillary):
+    payload = {
+        "configurator": CONFIGURATOR_ID,
+        "scene": item['scene_id'],
+        "sceneview": item['sceneview'] if item['sceneview'] else ancillary['sceneview_id'],
+        "texture": item['id'],
+        "store": item['store'] if item['store'] else ancillary['store_id'],
+        "json_data": json.dumps(RENDER_CONFIG)
+    }
+    files = {"json_file": ("json_file.json", ancillary['json_content'], "application/json")}
     
-    lower_to_original_term = {term.lower(): term for term in search_terms_list}
-    search_terms_lower_set = set(lower_to_original_term.keys())
+    try:
+        r = session.post(RENDER_URL, data=payload, files=files)
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"\n     [!] Render Error: {e}")
+        return False
 
-    print(f"\nFiltering {len(all_items)} items for matches...")
+# --- CORE LOGIC ---
+def fetch_target_textures(session):
+    # 1. Determine Scenes
+    target_scenes = SCENE_ID_LIST
+    if not target_scenes:
+        print_header("Fetching All Configurator Scenes")
+        scenes_data = get_paginated_data(session, SCENE_LIST_URL, "Scenes")
+        target_scenes = [str(s['id']) for s in scenes_data]
+        print(f"   > Total Scenes Found: {len(target_scenes)}")
     
-    matches_to_patch = []
-    for item in all_items:
-        item_display_name = item.get("display_name", "")
-        item_display_name_lower = item_display_name.lower()
-        
-        if item_display_name_lower in search_terms_lower_set:
-            match_data = {
-                "display_name": item_display_name,
-                "id": str(item.get("id")),
-                "data_id": str(item.get("data", {}).get("id")) if item.get("data") else None,
-                "scene_id": str(item.get("fetched_for_scene_id")) if item.get("fetched_for_scene_id") else None
-            }
-            matches_to_patch.append(match_data)
+    if not target_scenes:
+        return []
 
-    if not matches_to_patch:
-        print(f"No exact matches found for terms: {search_terms_list}")
-        return
-
-    print(f"Found {len(matches_to_patch)} texture(s) to patch.")
-
-    value_display = "true" if target_value else "false"
-    confirm = input(f"Are you sure you want to set '{target_field}={value_display}' for these items? (y/n): ").strip().lower()
-    if confirm not in ['y', 'yes']:
-        print("Operation cancelled.")
-        return
-
-    patched_count = 0
-    total = len(matches_to_patch)
+    # 2. Fetch Textures (Batch)
+    print_header("Fetching Scene Textures")
+    all_textures = []
     
-    print(f"\n--- Starting Patch Operation ---")
-    for i, item in enumerate(matches_to_patch, 1):
-        print(f"[{i}/{total}] Updating {target_field} for '{item['display_name']}' (ID: {item['id']})...", end="", flush=True)
+    # Calculate total operations for progress bar
+    total_ops = len(target_scenes) * (len(SCENE_OPTION_ID_LIST) if SCENE_OPTION_ID_LIST else 1)
+    current_op = 0
+
+    for scene_id in target_scenes:
+        options = SCENE_OPTION_ID_LIST if SCENE_OPTION_ID_LIST else [None]
         
-        time.sleep(REQUEST_DELAY)
-        
-        success = patch_scene_texture(
-            session, 
-            item['id'], 
-            item['data_id'], 
-            target_field,
-            target_value, 
-            item['display_name'],
-            item['scene_id'],
-            CONFIGURATOR_ID
-        )
-        
-        if success:
-            print(" Done.")
-            patched_count += 1
-        else:
-            print(" Failed.")
+        for opt_id in options:
+            current_op += 1
+            query = f"scene={scene_id}" + (f"&sceneoption={opt_id}" if opt_id else "")
+            url = f"{BASE_URL}/scene-texture/?{query}&per_page=100"
             
-    print(f"\n--- Patching Complete ---")
-    print(f"Successfully Updated: {patched_count}/{total}")
+            # Helper to just get results without full pagination print spam
+            try:
+                # We do a simplified fetch here to keep UI clean during massive batch
+                r = session.get(url) 
+                if r.status_code == 200:
+                    data = r.json()
+                    results = data.get("results", [])
+                    # Enrich data
+                    for item in results:
+                        item['fetched_for_scene_id'] = scene_id
+                    all_textures.extend(results)
+                    
+                    # Handle Next Pages silently
+                    while data.get("next_link"):
+                        r = session.get(data["next_link"])
+                        if r.status_code != 200: break
+                        data = r.json()
+                        page_res = data.get("results", [])
+                        for item in page_res: item['fetched_for_scene_id'] = scene_id
+                        all_textures.extend(page_res)
+            except:
+                pass
+            
+            print_progress(current_op, total_ops, prefix="Scanning", suffix=f"Found: {len(all_textures)}")
 
+    return all_textures
+
+def filter_matches(all_items, search_terms):
+    print_header(f"Filtering Results: {search_terms}")
+    matches = []
+    search_lower = [t.lower() for t in search_terms]
+    
+    for item in all_items:
+        name = item.get("display_name", "").lower()
+        if any(term in name for term in search_lower):
+            matches.append({
+                "display_name": item.get("display_name"),
+                "id": str(item.get("id")),
+                "scene_id": str(item.get("fetched_for_scene_id")),
+                "data_id": str(item.get("data", {}).get("id")) if item.get("data") else None,
+                "sceneoption": str(item.get("sceneoption")),
+                "store": str(item.get("store")) if item.get("store") else None,
+                "sceneview": str(item.get("sceneview")) if item.get("sceneview") else None
+            })
+    
+    print(f"   > Matches Found: {len(matches)}")
+    return matches
+
+def run_patch_logic(session, matches):
+    print("\n[A] is_enable")
+    print("[B] is_updated")
+    choice = input("Select Field: ").lower().strip()
+    field = "is_enable" if choice == 'a' else "is_updated" if choice == 'b' else None
+    
+    if not field: return
+    
+    val = input(f"Set {field} to (T)rue or (F)alse? ").lower().strip()
+    bool_val = True if val in ['t', 'y', '1'] else False
+    
+    print_header(f"Patching {len(matches)} items")
+    success_count = 0
+    
+    for i, item in enumerate(matches):
+        if patch_texture_property(session, item, field, bool_val):
+            success_count += 1
+        print_progress(i + 1, len(matches), prefix="Patching", suffix=f"Success: {success_count}")
+
+def run_render_logic(session, matches):
+    # Group by Scene to optimize JSON downloading
+    grouped = {}
+    for m in matches:
+        sid = m['scene_id']
+        if sid not in grouped: grouped[sid] = []
+        grouped[sid].append(m)
+    
+    print_header(f"Rendering {len(matches)} Textures across {len(grouped)} Scenes")
+    
+    total_processed = 0
+    total_matches = len(matches)
+    
+    for scene_id, items in grouped.items():
+        # Get Context ONCE per scene
+        ancillary = get_scene_ancillary_data(session, scene_id)
+        
+        if not ancillary['json_content']:
+            print(f"     [SKIP] Scene {scene_id} has no valid JSON.")
+            total_processed += len(items)
+            continue
+            
+        for item in items:
+            send_render_request(session, item, ancillary)
+            total_processed += 1
+            print_progress(total_processed, total_matches, prefix="Sending", suffix=f"Scene: {scene_id}")
+
+# --- MAIN ---
 def main():
     if "YOUR_BEARER_TOKEN" in BEARER_TOKEN:
-        print("ERROR: Please replace 'YOUR_BEARER_TOKEN' in the script with your actual Bearer Token.")
-        sys.exit(1)
+        print("ERROR: Update BEARER_TOKEN.")
+        return
 
-    with requests.Session() as session:
-        session.headers.update(DEFAULT_HEADERS)
+    with requests.Session() as s:
+        s.headers.update(DEFAULT_HEADERS)
         
-        print("\n--- Scene Texture Patcher ---")
-        print(f"Configurator ID: {CONFIGURATOR_ID}")
-        print(f"Target Scenes: {SCENE_ID_LIST if SCENE_ID_LIST else 'ALL Scenes'}")
-        print(f"Target Options: {SCENE_OPTION_ID_LIST if SCENE_OPTION_ID_LIST else 'All Options'}")
-        print(f"Search Terms: {TEXTURE_SEARCH_TERMS}")
-        print(f"Request Delay: {REQUEST_DELAY}s")
-        
-        print("\nSelect the field you want to update:")
-        print("1. is_enable")
-        print("2. is_updated")
-        
-        field_choice = input("Enter choice (1 or 2): ").strip()
-        target_field = ""
-        
-        if field_choice == '1':
-            target_field = "is_enable"
-        elif field_choice == '2':
-            target_field = "is_updated"
-        else:
-            print("Invalid choice. Exiting.")
-            sys.exit(1)
+        while True:
+            print_header("CONFIGURATOR TOOLBOX")
+            print(f" ID: {CONFIGURATOR_ID} | Search: {TEXTURE_SEARCH_TERMS}")
+            print(f" Target: {'ALL Scenes' if not SCENE_ID_LIST else f'{len(SCENE_ID_LIST)} Specific Scenes'}")
+            print("-" * 60)
+            print(" 1. Patch Texture Properties")
+            print(" 2. Send Renders (Auto-Fetch JSON/Views)")
+            print(" 0. Exit")
             
-        value_input = input(f"Set '{target_field}' to True or False? (t/f): ").strip().lower()
-        target_value = None
-        
-        if value_input in ['t', 'true', '1', 'yes', 'y']:
-            target_value = True
-        elif value_input in ['f', 'false', '0', 'no', 'n']:
-            target_value = False
-        else:
-            print("Invalid input. Exiting.")
-            sys.exit(1)
-
-        # --- Fetch Scene IDs if SCENE_ID_LIST is empty ---
-        target_scene_ids = SCENE_ID_LIST
-        if not target_scene_ids:
-            print("\nSCENE_ID_LIST is empty. Fetching ALL scene IDs for the configurator...")
-            all_scenes_data = get_paginated_data(session, SCENE_DATA_URL)
-            target_scene_ids = [str(item.get('id')) for item in all_scenes_data if item.get('id')]
-            print(f"Found {len(target_scene_ids)} scenes.")
+            c = input("\n Choice > ").strip()
+            if c == '0': break
             
-            if not target_scene_ids:
-                print("No scenes found. Exiting.")
-                return
-
-        combined_texture_data = []
-        print(f"\nStarting batch fetch for {len(target_scene_ids)} scenes...")
-        
-        total_fetches = len(target_scene_ids) * (len(SCENE_OPTION_ID_LIST) if SCENE_OPTION_ID_LIST else 1)
-        current_fetch = 0
-        
-        for scene_id in target_scene_ids:
-            if not SCENE_OPTION_ID_LIST:
-                current_fetch += 1
-                print(f"Fetching {current_fetch}/{total_fetches}: scene={scene_id} (all options)...")
-                current_url = f"https://prod.imagine.io/configurator/api/v2/scene-texture/?scene={scene_id}&sort=name&per_page=50"
-                data = get_paginated_data(session, current_url)
-                for item in data:
-                    item['fetched_for_scene_id'] = scene_id
-                combined_texture_data.extend(data)
-            else:
-                for option_id in SCENE_OPTION_ID_LIST:
-                    current_fetch += 1
-                    print(f"Fetching {current_fetch}/{total_fetches}: scene={scene_id}, option={option_id}...")
-                    current_url = f"https://prod.imagine.io/configurator/api/v2/scene-texture/?scene={scene_id}&sceneoption={option_id}&sort=name&per_page=50"
-                    data = get_paginated_data(session, current_url)
-                    for item in data:
-                        item['fetched_for_scene_id'] = scene_id
-                    combined_texture_data.extend(data)
-        
-        if combined_texture_data:
-            process_and_patch_textures(session, combined_texture_data, TEXTURE_SEARCH_TERMS, target_field, target_value)
-        else:
-            print("No texture data found to process.")
+            if c in ['1', '2']:
+                # 1. Get Data
+                raw_data = fetch_target_textures(s)
+                if not raw_data: 
+                    print("No textures found.")
+                    continue
+                
+                # 2. Filter
+                matches = filter_matches(raw_data, TEXTURE_SEARCH_TERMS)
+                if not matches:
+                    print("No matches for search terms.")
+                    continue
+                
+                # 3. Execute
+                if c == '1': run_patch_logic(s, matches)
+                if c == '2': run_render_logic(s, matches)
 
 if __name__ == "__main__":
     main()
