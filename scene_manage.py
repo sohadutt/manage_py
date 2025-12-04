@@ -24,7 +24,7 @@ except ImportError:
     zstd = None
 
 # --- CONFIGURATION ---
-BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0ODMyNDg3LCJpYXQiOjE3NjQ3NDYwODcsImp0aSI6ImNhNzE4NTgwNmRlYzQwYTFhZjJmMWE5YmVkMjU4YTUxIiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.JDzYCCwufOGPXF7KkBCC1rhfhkv7z1Nlymw-HeWBc_c"
+BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0OTIwNzg2LCJpYXQiOjE3NjQ3NDYwODcsImp0aSI6ImMxZmVjY2I3OWZmNzRiNDA5MGYzNDg2YWYyODIwYWI4IiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.MlYV49TiqCABSXVAuhGoVV79oewTZDYa3LsNOPa0WEY"
 CONFIGURATOR_ID = "7049"
 
 SCENE_ID_LIST = ['22712'] 
@@ -49,7 +49,7 @@ PATCH_URL = f"{BASE_URL}/scene-texture/"
 DETAILS_URL = f"{BASE_URL}/scene/details/{{scene_id}}/"
 VIEWS_URL = f"{BASE_URL}/scene-view/?scene={{scene_id}}"
 
-# CHANGED: Removed 'br' to request GZIP or Plain Text by default
+# Removed 'br' to request GZIP or Plain Text by default
 DEFAULT_HEADERS = {
     "Authorization": f"Bearer {BEARER_TOKEN}",
     "accept-encoding": "gzip, deflate", 
@@ -75,6 +75,33 @@ def print_progress(iteration, total, prefix='', suffix='', decimals=1, length=40
         sys.stdout.write('\n')
     sys.stdout.flush()
 
+def log_error(response: requests.Response, context: str):
+    """
+    Parses response to print clear error messages.
+    CRITICAL: Exits script if Token is invalid (401).
+    """
+    print(f"\n [!] ERROR during {context}")
+    print(f"     Status Code: {response.status_code}")
+    
+    if response.status_code == 401:
+        print_header("CRITICAL ERROR: TOKEN EXPIRED")
+        print(" [!!!] The Bearer Token is invalid or expired.")
+        print("       Please update BEARER_TOKEN in the script.")
+        print("       Exiting script...")
+        sys.exit(1) # FORCE EXIT ON AUTH FAILURE
+        
+    elif response.status_code == 403:
+        print("     [!] FORBIDDEN. You do not have permission to access this resource.")
+    elif response.status_code == 404:
+        print("     [!] NOT FOUND. The ID or URL is incorrect.")
+    
+    # Try to print JSON error message from server
+    try:
+        err_json = response.json()
+        print(f"     Server Message: {json.dumps(err_json, indent=2)}")
+    except:
+        print(f"     Server Response: {response.text[:200]}") 
+
 # --- NETWORK HELPERS ---
 def get_paginated_data(session: requests.Session, start_url: str, description: str = "Fetching data") -> List[Dict[str, Any]]:
     all_results = []
@@ -87,8 +114,12 @@ def get_paginated_data(session: requests.Session, start_url: str, description: s
         total_count = data.get("count", 0)
         all_results.extend(data.get("results", []))
         current_url = data.get("next_link")
-    except requests.exceptions.HTTPError as http_err:
-        print(f"\nHTTP error occurred: {http_err}")
+    except requests.exceptions.HTTPError:
+        # If this fails with 401, log_error will kill the script here
+        log_error(init_resp, "Fetching Data List") 
+        current_url = None
+    except Exception as e:
+        print(f" [!] Network Error: {e}")
         current_url = None
 
     if total_count == 0:
@@ -102,6 +133,9 @@ def get_paginated_data(session: requests.Session, start_url: str, description: s
             data = resp.json()
             all_results.extend(data.get("results", []))
             current_url = data.get("next_link")
+        except requests.exceptions.HTTPError:
+            log_error(resp, "Fetching Next Page")
+            break # Stop paging on error
         except Exception:
             break
 
@@ -109,49 +143,23 @@ def get_paginated_data(session: requests.Session, start_url: str, description: s
     return all_results
 
 def robust_decompress(raw_bytes: bytes) -> bytes:
-    """
-    Attempts to decompress data using various algorithms.
-    """
-    # 1. Brotli (Most likely culprit)
+    """Attempts to decompress data using various algorithms."""
     if brotli:
-        try:
-            return brotli.decompress(raw_bytes)
-        except:
-            pass
-            
-    # 2. GZIP
-    try:
-        return gzip.decompress(raw_bytes)
-    except:
-        pass
-
-    # 3. Zstandard
+        try: return brotli.decompress(raw_bytes)
+        except: pass
+    try: return gzip.decompress(raw_bytes)
+    except: pass
     if zstd:
-        try:
+        try: 
             dctx = zstd.ZstdDecompressor()
             return dctx.decompress(raw_bytes, max_output_size=104857600)
-        except:
-            pass
-
-    # 4. LZMA / XZ
-    try:
-        return lzma.decompress(raw_bytes)
-    except:
-        pass
-
-    # 5. ZLIB
-    try:
-        return zlib.decompress(raw_bytes)
-    except:
-        pass
-
-    # 6. BZ2
-    try:
-        return bz2.decompress(raw_bytes)
-    except:
-        pass
-
-    # Return original if nothing worked (maybe it is plain text)
+        except: pass
+    try: return lzma.decompress(raw_bytes)
+    except: pass
+    try: return zlib.decompress(raw_bytes)
+    except: pass
+    try: return bz2.decompress(raw_bytes)
+    except: pass
     return raw_bytes
 
 def get_scene_ancillary_data(session: requests.Session, scene_id: str) -> Dict[str, Any]:
@@ -169,35 +177,32 @@ def get_scene_ancillary_data(session: requests.Session, scene_id: str) -> Dict[s
 
         if json_url:
             print("     [i] Downloading JSON file...")
-            # Note: We use the session here which now has 'br' REMOVED from headers
             file_resp = session.get(json_url) 
-            file_resp.raise_for_status()
             
+            if file_resp.status_code != 200:
+                log_error(file_resp, "Downloading JSON File")
+                return result
+
             raw_content = file_resp.content
             final_json_obj = None
 
             # --- DECOMPRESSION & PARSING ---
             try:
-                # 1. Try treating it as standard JSON first
                 final_json_obj = file_resp.json()
             except ValueError:
-                # 2. If that fails, run the Brute Force Decompressor
                 print("     [i] Standard parse failed. Attempting decompression...")
                 decompressed_bytes = robust_decompress(raw_content)
-                
                 try:
                     final_json_obj = json.loads(decompressed_bytes)
                     print("     [i] Successfully parsed JSON after decompression.")
-                except Exception as e:
+                except Exception:
                     print(f"     [!] Parsing failed. Header: {raw_content[:10]}")
                     print("     [!] Make sure 'brotli' and 'zstandard' are installed via pip.")
 
             if final_json_obj is not None:
-                # Convert back to clean bytes (Pretty Printed)
                 clean_bytes = json.dumps(final_json_obj, indent=4).encode('utf-8')
                 result["json_content"] = clean_bytes
 
-                # --- SAVE TO DISK ---
                 try:
                     today_str = datetime.now().strftime("%Y-%m-%d")
                     save_dir = os.path.join("json_dump", today_str, CONFIGURATOR_ID, str(scene_id))
@@ -215,23 +220,24 @@ def get_scene_ancillary_data(session: requests.Session, scene_id: str) -> Dict[s
                     print(f"     [!] Error saving file to disk: {disk_err}")
             else:
                 print("     [!] CRITICAL: Could not decode Scene JSON.")
-
         else:
             print("     [!] Scene has no JSON file URL.")
-            return result 
+    except requests.exceptions.HTTPError:
+        log_error(resp, "Fetching Scene Details")
     except Exception as e:
         print(f"     [!] Details Error: {e}")
-        return result
 
     # 2. Scene View
     try:
         resp = session.get(VIEWS_URL.format(scene_id=scene_id))
-        resp.raise_for_status()
-        views = resp.json().get("results", [])
-        if views:
-            result["sceneview_id"] = str(views[0].get("id"))
+        if resp.status_code == 200:
+            views = resp.json().get("results", [])
+            if views:
+                result["sceneview_id"] = str(views[0].get("id"))
+            else:
+                result["sceneview_id"] = scene_id
         else:
-            result["sceneview_id"] = scene_id
+             result["sceneview_id"] = scene_id
     except Exception:
         result["sceneview_id"] = scene_id
 
@@ -255,7 +261,10 @@ def patch_texture_property(session, item, field, value):
         r = session.patch(url, files=payload)
         r.raise_for_status()
         return True
-    except:
+    except requests.exceptions.HTTPError:
+        log_error(r, f"Patching {field}")
+        return False
+    except Exception:
         return False
 
 def send_render_request(session, item, ancillary):
@@ -272,6 +281,7 @@ def send_render_request(session, item, ancillary):
     local_path = ancillary.get('local_path')
 
     try:
+        r = None
         if json_bytes:
             files = {
                 "json_file": ("scene_data.json", json_bytes, "application/json")
@@ -288,11 +298,16 @@ def send_render_request(session, item, ancillary):
                 r = session.post(RENDER_URL, data=payload, files=files)
                 r.raise_for_status()
                 return True
-            
         else:
              print(f"\n     [!] Error: No valid JSON data available for render.")
              return False
 
+    except requests.exceptions.HTTPError:
+        if r is not None:
+            log_error(r, "Sending Render Request")
+        else:
+            print("     [!] Request failed before response.")
+        return False
     except Exception as e:
         print(f"\n     [!] Render Error: {e}")
         return False
@@ -302,6 +317,7 @@ def fetch_target_textures(session):
     target_scenes = SCENE_ID_LIST
     if not target_scenes:
         print_header("Fetching All Configurator Scenes")
+        # get_paginated_data handles auth errors inside its catch block via log_error
         scenes_data = get_paginated_data(session, SCENE_LIST_URL, "Scenes")
         target_scenes = [str(s['id']) for s in scenes_data]
         print(f"   > Total Scenes Found: {len(target_scenes)}")
@@ -334,12 +350,18 @@ def fetch_target_textures(session):
                     
                     while data.get("next_link"):
                         r = session.get(data["next_link"])
-                        if r.status_code != 200: break
+                        if r.status_code != 200: 
+                            log_error(r, "Fetching Next Page")
+                            break
                         data = r.json()
                         page_res = data.get("results", [])
                         for item in page_res: item['fetched_for_scene_id'] = scene_id
                         all_textures.extend(page_res)
-            except:
+                else:
+                    # This will check for 401 and exit if needed
+                    log_error(r, "Fetching Textures")
+            except Exception as e:
+                print(f" [!] Fetch Error: {e}")
                 pass
             
             print_progress(current_op, total_ops, prefix="Scanning", suffix=f"Found: {len(all_textures)}")
@@ -347,13 +369,10 @@ def fetch_target_textures(session):
     return all_textures
 
 def filter_matches(all_items, search_terms):
-    print_header(f"Filtering Results: {search_terms}")
     matches = []
-    search_lower = [t.lower() for t in search_terms]
-    
-    for item in all_items:
-        name = item.get("display_name", "").lower()
-        if any(term in name for term in search_lower):
+    if not search_terms:
+        # If no search terms, use everything
+        for item in all_items:
             matches.append({
                 "display_name": item.get("display_name"),
                 "id": str(item.get("id")),
@@ -363,7 +382,23 @@ def filter_matches(all_items, search_terms):
                 "store": str(item.get("store")) if item.get("store") else None,
                 "sceneview": str(item.get("sceneview")) if item.get("sceneview") else None
             })
-    
+        print(f"\n   > Total Items to Filter: {len(matches)}")
+    else:
+        print_header(f"Filtering Results: {search_terms}")
+        search_lower = [t.lower() for t in search_terms]
+        
+        for item in all_items:
+            name = item.get("display_name", "").lower()
+            if any(term in name for term in search_lower):
+                matches.append({
+                    "display_name": item.get("display_name"),
+                    "id": str(item.get("id")),
+                    "scene_id": str(item.get("fetched_for_scene_id")),
+                    "data_id": str(item.get("data", {}).get("id")) if item.get("data") else None,
+                    "sceneoption": str(item.get("sceneoption")),
+                    "store": str(item.get("store")) if item.get("store") else None,
+                    "sceneview": str(item.get("sceneview")) if item.get("sceneview") else None
+                }) 
     print(f"   > Matches Found: {len(matches)}")
     return matches
 
