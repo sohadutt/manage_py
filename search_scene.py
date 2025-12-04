@@ -8,14 +8,25 @@ import zipfile
 import time
 from typing import List, Dict, Any, Optional
 
-BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYzNDY1OTgwLCJpYXQiOjE3NjMzNzk1ODAsImp0aSI6Ijg1OTVkYWQyNmM5NzQxMWNhM2Y0YzY5MzQxNzVlYWY4IiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.ajwXDdIoHQE_m4l9YyXvF5asJYu39gSM2pBBTz7iUQ0"
-CONFIGURATOR_ID = "7050"
+# --- CONFIGURATION ---
+BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0ODMyNDg3LCJpYXQiOjE3NjQ3NDYwODcsImp0aSI6ImNhNzE4NTgwNmRlYzQwYTFhZjJmMWE5YmVkMjU4YTUxIiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.JDzYCCwufOGPXF7KkBCC1rhfhkv7z1Nlymw-HeWBc_c"
+CONFIGURATOR_ID = "7060"
 
-SCENE_ID_LIST = ["20805"] ## Scene ID
-SCENE_OPTION_ID_LIST = ["49009"] ## Lable ID
-TEXTURE_SEARCH_TERMS = ["Blue"] ## Texture search terms
+SCENE_ID_LIST = [
+    "23169", "23170", "23173", "23174", "23181", "23182", "23185", "23270",
+    "23186", "23191", "23192", "23195", "23196", "23197", "23198", "23201",
+    "23202", "23207", "23208", "23210", "23211", "23247", "23248", "23249",
+    "23250", "23252", "23253", "23254", "23255", "23257", "23258", "23259",
+    "23260", "23261", "23262", "23263", "23264"
+]
+SCENE_OPTION_ID_LIST = ["49972"] 
+# "49971" 
+TEXTURE_SEARCH_TERMS = ["Gold", "Brass", "Pewter", "Stainless Steel", "Sage Green", "Cobalt", "Gloss Black", "Matte White", "Stainless Steel"] 
 
-PUBLIC_TOKEN = "00c61faa-6c46-3d56-ad03-5a29263d30c9"
+# Populate this list for Direct Download (Option 3 -> Sub-option 2)
+RENDER_ID = [] 
+
+PUBLIC_TOKEN = "d798c1ce-3b28-356d-a3ed-4ca17883055d"
 BASE_URL = "https://prod.imagine.io/configurator/api/v2/"
 SCENE_DATA_URL = f"{BASE_URL}config-scene/?configurator={CONFIGURATOR_ID}&page=1"
 RENDER_DOWNLOAD_API_URL = f"{BASE_URL}configurator-images-download/"
@@ -57,7 +68,6 @@ def get_paginated_data(session: requests.Session, start_url: str) -> List[Dict[s
             try:
                 response = session.get(current_url)
                 response.raise_for_status()
-                # If successful, break retry loop
                 break 
             except requests.exceptions.HTTPError as http_err:
                 retries -= 1
@@ -158,6 +168,7 @@ def get_paginated_data(session: requests.Session, start_url: str) -> List[Dict[s
 def _process_scene_products(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     scene_id = str(item.get("id"))
     scene_name = item.get("name", "")
+    is_enabled = item.get("is_enable", bool)
     sceneproduct_list = item.get("sceneproduct_data", [])
 
     if not (sceneproduct_list and isinstance(sceneproduct_list, list)):
@@ -178,7 +189,8 @@ def _process_scene_products(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {
         "scene_id": scene_id,
         "scene_name": scene_name,
-        "sceneproduct_data": products_data
+        "is_enabled": is_enabled,
+        # "sceneproduct_data": products_data
     }
 
 def search_public_scenes(all_items: List[Dict[str, Any]]):
@@ -223,15 +235,12 @@ def search_scene_textures(all_items: List[Dict[str, Any]], search_terms_list: Li
         print("No search terms provided, returning all fetched texture data...")
         all_texture_data = []
         for item in all_items:
-            item_tiling_value_x = item.get("material_properties", {}).get("tilingOffsetValue", {}).get("_MainTex", {}).get("xMatTiling", None)
-            item_tiling_value_y = item.get("material_properties", {}).get("tilingOffsetValue", {}).get("_MainTex", {}).get("yMatTiling", None)
             match_data = {
                 "display_name": item.get("display_name", ""),
                 "id": str(item.get("id")),
                 "data_id": str(item.get("data", {}).get("id")) if item.get("data") else None,
                 "sceneoption": str(item.get("sceneoption")) if item.get("sceneoption") else None,
                 "scene_id": str(item.get("fetched_for_scene_id")) if item.get("fetched_for_scene_id") else None,
-                "tiling": [f"x: {item_tiling_value_x}", f"y: {item_tiling_value_y}"] if item_tiling_value_x is not None and item_tiling_value_y is not None else None
             }
             all_texture_data.append(match_data)
         
@@ -252,17 +261,14 @@ def search_scene_textures(all_items: List[Dict[str, Any]], search_terms_list: Li
     for item in all_items:
         item_display_name = item.get("display_name", "")
         item_display_name_lower = item_display_name.lower()
-        item_tiling_value_x = item.get("material_properties", {}).get("tilingOffsetValue", {}).get("_MainTex", {}).get("xMatTiling", None)
-        item_tiling_value_y = item.get("material_properties", {}).get("tilingOffsetValue", {}).get("_MainTex", {}).get("yMatTiling", None)
         
-        if item_display_name_lower in search_terms_lower_set: # <-- This is an EXACT match
+        if item_display_name_lower in search_terms_lower_set:
             match_data = {
                 "display_name": item_display_name,
                 "id": str(item.get("id")),
                 "data_id": str(item.get("data", {}).get("id")) if item.get("data") else None,
                 "sceneoption": str(item.get("sceneoption")) if item.get("sceneoption") else None,
                 "scene_id": str(item.get("fetched_for_scene_id")) if item.get("fetched_for_scene_id") else None,
-                "tiling": [f"x: {item_tiling_value_x}", f"y: {item_tiling_value_y}"] if item_tiling_value_x is not None and item_tiling_value_y is not None else None
             }
             original_term = lower_to_original_term[item_display_name_lower]
             results_json[original_term].append(match_data)
@@ -272,20 +278,26 @@ def search_scene_textures(all_items: List[Dict[str, Any]], search_terms_list: Li
     print("--- JSON Output ---")
     print(json.dumps(results_json, indent=4))
 
-def search_public_data_store_id(all_items: List[Dict[str, Any]]) -> List[str]:
+def search_public_data_store_id(all_items: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     if not all_items:
-        print("No data to search.")
         return []
-    try:
-        store_ids = []
-        for item in all_items:
-            store_id = item.get("id")
-            if store_id:
-                store_ids.append(str(store_id))
-        return store_ids
-    except EOFError:
-        print("No input received. Aborting search.")
-        return []
+    
+    valid_stores = []
+    target_scenes = set(str(sid) for sid in SCENE_ID_LIST)
+    has_filter = len(target_scenes) > 0
+
+    for item in all_items:
+        store_id = str(item.get("id", ""))
+        scene_id = str(item.get("scene", ""))
+        if not store_id or not scene_id:
+            continue
+        if has_filter:
+            if scene_id in target_scenes:
+                valid_stores.append({"store_id": store_id, "scene_id": scene_id})
+        else:
+            valid_stores.append({"store_id": store_id, "scene_id": scene_id})
+
+    return valid_stores
 
 def search_public_data_render_id(all_items: List[Dict[str, Any]], search_terms_list: List[str]) -> Dict[str, Dict[str, str]]:
     if not all_items:
@@ -308,13 +320,13 @@ def search_public_data_render_id(all_items: List[Dict[str, Any]], search_terms_l
             for item in all_items:
                 item_display_name_lower = item.get("display_name", "").lower()
                 for term in search_terms_list:
-                    if term.lower() in item_display_name_lower: # <-- This is a RELATIVE match
+                    if term.lower() in item_display_name_lower: 
                         render_id = item.get("render_id")
                         store_id = item.get("fetched_for_store_id")
                         display_name = item.get("display_name", f"render_{render_id}")
                         if render_id and store_id:
                             render_id_to_details_map[str(render_id)] = {"store_id": str(store_id), "display_name": display_name}
-                        break # Item matched, move to next item
+                        break 
                         
         print(f"Found {len(render_id_to_details_map)} unique render IDs to download.")
         return render_id_to_details_map
@@ -342,7 +354,7 @@ def download_renders(session: requests.Session, render_map: Dict[str, Dict[str, 
         
         # Sanitize display_name to make it a valid folder name
         safe_display_name = "".join(c for c in display_name if c.isalnum() or c in (' ', '_')).rstrip()
-        if not safe_display_name: # Handle empty or invalid names
+        if not safe_display_name: 
             safe_display_name = f"render_{render_id}"
 
         print(f"\nFetching download link for render_id: {render_id} (Store: {store_id}, Name: {safe_display_name})")
@@ -350,8 +362,8 @@ def download_renders(session: requests.Session, render_map: Dict[str, Dict[str, 
         
         # New folder structure: dump/<store_id>/<safe_display_name>/<render_id>.zip
         store_folder = os.path.join(dump_folder, store_id)
-        extract_path = os.path.join(store_folder, safe_display_name) # e.g., dump/11245/Primed White/
-        filepath = os.path.join(extract_path, f"{render_id}.zip") # Put the zip inside the final folder
+        extract_path = os.path.join(store_folder, safe_display_name)
+        filepath = os.path.join(extract_path, f"{render_id}.zip") 
         
         os.makedirs(extract_path, exist_ok=True)
         
@@ -398,7 +410,6 @@ def download_renders(session: requests.Session, render_map: Dict[str, Dict[str, 
             print(f"  Extracting...")
             try:
                 with zipfile.ZipFile(filepath, 'r') as zip_ref:
-                    # os.makedirs(extract_path, exist_ok=True) # Already created
                     zip_ref.extractall(extract_path)
                 print(f"  Successfully extracted to: {extract_path}")
 
@@ -429,7 +440,7 @@ def main():
             print("\n--- API Search Menu ---")
             print("1. Search Public Scenes (by 'name')")
             print("2. Search Scene Textures (by 'display_name')")
-            print("3. Search & Download Public Renders")
+            print("3. Download Renders (Search Public or Direct ID)")
             print("0. Exit")
 
             choice = input("Enter your choice (1, 2, 3, or 0): ").strip()
@@ -448,7 +459,6 @@ def main():
                 
                 for scene_id in SCENE_ID_LIST:
                     if not SCENE_OPTION_ID_LIST:
-                        # Fetch all options for the scene
                         current_fetch += 1
                         print(f"\n--- Fetching {current_fetch}/{total_fetches}: scene={scene_id} (all options) ---")
                         current_url = f"https://prod.imagine.io/configurator/api/v2/scene-texture/?scene={scene_id}&sort=name&per_page=50"
@@ -457,7 +467,6 @@ def main():
                             item['fetched_for_scene_id'] = scene_id
                         combined_texture_data.extend(data)
                     else:
-                        # Fetch only specified options
                         for option_id in SCENE_OPTION_ID_LIST:
                             current_fetch += 1
                             print(f"\n--- Fetching {current_fetch}/{total_fetches}: scene={scene_id}, sceneoption={option_id} ---")
@@ -472,55 +481,90 @@ def main():
                     search_scene_textures(combined_texture_data, TEXTURE_SEARCH_TERMS)
                     
             elif choice == '3':
-                print("--- Fetching Public Config Data (to get Store IDs) ---")
-                all_data = get_paginated_data(session, CONFIG_PUBLIC_DATA_URL)
-                all_texture_data = []
+                print("\n--- Download Selection ---")
+                print("1. Search & Download (Scrape Store/Textures based on Search Terms)")
+                print("2. Direct Download (Use hardcoded RENDER_ID list)")
                 
-                if not all_data:
-                    print("No public config data found.")
-                    continue
+                sub_choice = input("Enter download method (1 or 2): ").strip()
 
-                store_ids = search_public_data_store_id(all_data)
-                if not store_ids:
-                    print("No store_ids found, skipping public texture fetch.")
-                    continue
+                if sub_choice == '2':
+                    # --- NEW LOGIC: Direct Download via RENDER_ID list ---
+                    if not RENDER_ID:
+                        print("ERROR: RENDER_ID list is empty. Please populate it at the top of the script.")
+                        continue
+                    
+                    print(f"Preparing direct download for {len(RENDER_ID)} ID(s)...")
+                    manual_render_map = {}
+                    
+                    # Construct a map compatible with the existing download_renders function
+                    # We map them to a generic store folder "Manual_Downloads"
+                    for r_id in RENDER_ID:
+                        clean_id = str(r_id).strip()
+                        if clean_id:
+                            manual_render_map[clean_id] = {
+                                "store_id": "Manual_Downloads",
+                                "display_name": f"Render_{clean_id}"
+                            }
+                    
+                    download_renders(session, manual_render_map)
                 
-                print(f"Found {len(store_ids)} store(s). Fetching textures...")
-                
-                total_fetches = len(store_ids) * (len(SCENE_OPTION_ID_LIST) if SCENE_OPTION_ID_LIST else 1)
-                current_fetch = 0
+                elif sub_choice == '1':
+                    # --- EXISTING LOGIC: Search and Scrape ---
+                    print("--- Fetching Public Config Data (to get Store IDs) ---")
+                    all_data = get_paginated_data(session, CONFIG_PUBLIC_DATA_URL)
+                    all_texture_data = []
+                    
+                    if not all_data:
+                        print("No public config data found.")
+                        continue
 
-                for store in store_ids:
-                    if not SCENE_OPTION_ID_LIST:
-                        # Fetch all options for the store
-                        current_fetch += 1
-                        print(f"\n--- Fetching {current_fetch}/{total_fetches}: store={store} (all options) ---")
-                        public_texture_url = f"https://prod.imagine.io/configurator/api/v2/scenetexture-public-data/?token={PUBLIC_TOKEN}&store_id={store}&is_public=false&page=1"
-                        texture_data = get_paginated_data(session, public_texture_url)
-                        for item in texture_data:
-                            item['fetched_for_store_id'] = store
-                        all_texture_data.extend(texture_data)
-                    else:
-                        # Fetch only specified options
-                        for option_id in SCENE_OPTION_ID_LIST:
+                    store_ids = search_public_data_store_id(all_data)
+                    if not store_ids:
+                        print("No store_ids found, skipping public texture fetch.")
+                        continue
+                    
+                    print(f"Found {len(store_ids)} store(s). Fetching textures...")
+                    
+                    total_fetches = len(store_ids) * (len(SCENE_OPTION_ID_LIST) if SCENE_OPTION_ID_LIST else 1)
+                    current_fetch = 0
+    
+                    for store_data in store_ids:
+                        store_id = store_data.get("store_id")
+                        scene_id = store_data.get("scene_id", "Unknown Scene")
+                        
+                        if not store_id:
+                            continue
+
+                        if not SCENE_OPTION_ID_LIST:
                             current_fetch += 1
-                            print(f"\n--- Fetching {current_fetch}/{total_fetches}: store={store}, sceneoption={option_id} ---")
-                            public_texture_url = f"https://prod.imagine.io/configurator/api/v2/scenetexture-public-data/?token={PUBLIC_TOKEN}&store_id={store}&sceneoption_id={option_id}&is_public=false&page=1"
+                            print(f"\n--- Fetching {current_fetch}/{total_fetches}: store={store_id} [{scene_id}] (all options) ---")
+                            public_texture_url = f"https://prod.imagine.io/configurator/api/v2/scenetexture-public-data/?token={PUBLIC_TOKEN}&store_id={store_id}&is_public=false&page=1"
                             texture_data = get_paginated_data(session, public_texture_url)
                             for item in texture_data:
-                                item['fetched_for_store_id'] = store
+                                item['fetched_for_store_id'] = store_id
                             all_texture_data.extend(texture_data)
-                
-                print(f"\nBatch texture fetch complete. Total items: {len(all_texture_data)}")
+                        else:
+                            for option_id in SCENE_OPTION_ID_LIST:
+                                current_fetch += 1
+                                print(f"\n--- Fetching {current_fetch}/{total_fetches}: store={store_id} [{scene_id}], sceneoption={option_id} ---")
+                                public_texture_url = f"https://prod.imagine.io/configurator/api/v2/scenetexture-public-data/?token={PUBLIC_TOKEN}&store_id={store_id}&sceneoption_id={option_id}&is_public=false&page=1"
+                                texture_data = get_paginated_data(session, public_texture_url)
+                                for item in texture_data:
+                                    item['fetched_for_store_id'] = store_id
+                                all_texture_data.extend(texture_data)
+                    
+                    print(f"\nBatch texture fetch complete. Total items: {len(all_texture_data)}")
 
-                if all_texture_data:
-                    render_map = search_public_data_render_id(all_texture_data, TEXTURE_SEARCH_TERMS)
-                    if render_map:
-                        download_renders(session, render_map)
+                    if all_texture_data:
+                        render_map = search_public_data_render_id(all_texture_data, TEXTURE_SEARCH_TERMS)
+                        if render_map:
+                            download_renders(session, render_map)
+                        else:
+                            print(f"No render_ids found for the search terms: {TEXTURE_SEARCH_TERMS}")
                     else:
-                        print(f"No render_ids found for the search terms: {TEXTURE_SEARCH_TERMS}")
+                        print("No public texture data found.")
                 else:
-                    print("No public texture data found.")
+                    print("Invalid selection. Returning to main menu.")
                         
             elif choice == '0':
                 print("Exiting.")
