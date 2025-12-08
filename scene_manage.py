@@ -5,23 +5,8 @@ import json
 import time
 import os
 import gzip
-import io
-import lzma
-import bz2
-import zlib
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-
-# --- OPTIONAL IMPORTS ---
-try:
-    import brotli
-except ImportError:
-    brotli = None
-
-try:
-    import zstandard as zstd
-except ImportError:
-    zstd = None
+from typing import List, Dict, Any
 
 # --- CONFIGURATION ---
 BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY1MjYzODQzLCJpYXQiOjE3NjUxNzc0MzksImp0aSI6IjUzZWE3ZmM5YjhmMzQxMDk4YTUyMTA4YWEzNTNlMGFkIiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.g3i3-OxfHrdo9-X1HGiUaqd_B1aWrFij9m0x1ee2dO4"
@@ -43,7 +28,12 @@ RENDER_CONFIG = {
 
 # --- CONSTANTS ---
 BASE_URL = "https://prod.imagine.io/configurator/api/v2"
+
+# Endpoints
+# Note: Removed per_page=1000. Will use next_link pagination.
 SCENE_LIST_URL = f"{BASE_URL}/config-scene/?configurator={CONFIGURATOR_ID}&page=1"
+RENDER_STORE_LIST_URL = f"{BASE_URL}/render-store-list/?configurator={CONFIGURATOR_ID}&page=1"
+
 RENDER_URL = f"{BASE_URL}/scene-texture-render/"
 PATCH_URL = f"{BASE_URL}/scene-texture/"
 DETAILS_URL = f"{BASE_URL}/scene/details/{{scene_id}}/"
@@ -57,6 +47,12 @@ DEFAULT_HEADERS = {
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0"
 }
 
+# --- OPTIONAL IMPORTS ---
+try: import brotli
+except ImportError: brotli = None
+try: import zstandard as zstd
+except ImportError: zstd = None
+
 # --- UI HELPERS ---
 def print_header(title: str):
     print(f"\n{'='*60}")
@@ -64,25 +60,21 @@ def print_header(title: str):
     print(f"{'='*60}")
 
 def print_progress(iteration, total, prefix='', suffix='', decimals=1, length=40):
-    if total == 0:
-        return
+    if total == 0: return
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filled_length = int(length * iteration // total)
     bar = '█' * filled_length + '-' * (length - filled_length)
     sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix}')
-    if iteration == total:
-        sys.stdout.write('\n')
+    if iteration == total: sys.stdout.write('\n')
     sys.stdout.flush()
 
 def log_error(response: requests.Response, context: str):
     print(f"\n [!] ERROR during {context}")
     print(f"     Status Code: {response.status_code}")
-    
     if response.status_code == 401:
         print_header("CRITICAL ERROR: TOKEN EXPIRED")
         print(" [!!!] The Bearer Token is invalid or expired.")
         sys.exit(1)
-        
     try:
         err_json = response.json()
         print(f"     Server Message: {json.dumps(err_json, indent=2)}")
@@ -91,9 +83,13 @@ def log_error(response: requests.Response, context: str):
 
 # --- NETWORK HELPERS ---
 def get_paginated_data(session: requests.Session, start_url: str, description: str = "Fetching data") -> List[Dict[str, Any]]:
+    """
+    Standard pagination: fetches page 1, then follows 'next_link' until exhausted.
+    """
     all_results = []
     current_url = start_url
     
+    # 1. Fetch First Page
     try:
         init_resp = session.get(current_url)
         init_resp.raise_for_status()
@@ -102,15 +98,15 @@ def get_paginated_data(session: requests.Session, start_url: str, description: s
         all_results.extend(data.get("results", []))
         current_url = data.get("next_link")
     except requests.exceptions.HTTPError:
-        log_error(init_resp, "Fetching Data List") 
+        log_error(init_resp, description) 
         current_url = None
     except Exception as e:
         print(f" [!] Network Error: {e}")
         current_url = None
 
-    if total_count == 0:
-        return all_results
+    if total_count == 0: return all_results
 
+    # 2. Loop Next Links
     while current_url:
         print_progress(len(all_results), total_count, prefix=description, suffix=f"({len(all_results)}/{total_count})")
         try:
@@ -124,7 +120,7 @@ def get_paginated_data(session: requests.Session, start_url: str, description: s
             break
         except Exception:
             break
-
+    
     print_progress(total_count, total_count, prefix=description, suffix="Complete")
     return all_results
 
@@ -139,61 +135,76 @@ def robust_decompress(raw_bytes: bytes) -> bytes:
             dctx = zstd.ZstdDecompressor()
             return dctx.decompress(raw_bytes, max_output_size=104857600)
         except: pass
-    try: return lzma.decompress(raw_bytes)
+    try: import lzma; return lzma.decompress(raw_bytes)
     except: pass
-    try: return zlib.decompress(raw_bytes)
+    try: import zlib; return zlib.decompress(raw_bytes)
     except: pass
-    try: return bz2.decompress(raw_bytes)
+    try: import bz2; return bz2.decompress(raw_bytes)
     except: pass
     return raw_bytes
 
-def get_scene_ancillary_data(session: requests.Session, scene_id: str) -> Dict[str, Any]:
-    result: Dict[str, Any] = {"json_content": None, "store_id": None, "sceneview_id": None, "local_path": None}
+# --- STORE ID LOGIC ---
+def get_store_id_map_from_render_list(session: requests.Session) -> Dict[str, str]:
+    print_header("Resolving Store IDs from Render List")
+    store_map = {}
+    render_list_data = get_paginated_data(session, RENDER_STORE_LIST_URL, "Fetching Render Store List")
     
+    for item in render_list_data:
+        store_id = str(item.get("id"))
+        scene_id = str(item.get("scene"))
+        if store_id and scene_id and store_id != 'None' and scene_id != 'None':
+            store_map[scene_id] = store_id
+            
+    print(f" [OK] Mapped {len(store_map)} Scenes to Store IDs.")
+    return store_map
+
+def get_scene_ancillary_data(session: requests.Session, scene_id: str, store_map: Dict[str, str]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {"json_content": None, "store_id": None, "sceneview_id": None, "local_path": None}
     print(f"   > Resolving details for Scene {scene_id}...")
+
+    if scene_id in store_map:
+        result["store_id"] = store_map[scene_id]
+        print(f"     [i] Found Store ID in Map: {result['store_id']}")
+    else:
+        print(f"     [!] Warning: Scene {scene_id} not found in Render Store List.")
 
     try:
         resp = session.get(DETAILS_URL.format(scene_id=scene_id))
         resp.raise_for_status()
         details = resp.json()
-        result["store_id"] = str(details.get("store", "18340")) 
+        
+        if not result["store_id"]:
+            fallback = str(details.get("store"))
+            if fallback and fallback != 'None':
+                result["store_id"] = fallback
+                print(f"     [i] Fallback: Using Store ID from Scene Details: {result['store_id']}")
         
         json_url = details.get("json_file")
-
         if json_url:
             print("     [i] Downloading JSON file...")
             file_resp = session.get(json_url) 
-            
             if file_resp.status_code != 200:
                 log_error(file_resp, "Downloading JSON File")
                 return result
 
             raw_content = file_resp.content
             final_json_obj = None
-
             try:
                 final_json_obj = file_resp.json()
             except ValueError:
                 decompressed_bytes = robust_decompress(raw_content)
-                try:
-                    final_json_obj = json.loads(decompressed_bytes)
-                except Exception:
-                    print(f"     [!] Parsing failed.")
+                try: final_json_obj = json.loads(decompressed_bytes)
+                except: print(f"     [!] Parsing failed.")
 
             if final_json_obj is not None:
                 clean_bytes = json.dumps(final_json_obj, indent=4).encode('utf-8')
                 result["json_content"] = clean_bytes
-
                 try:
                     today_str = datetime.now().strftime("%Y-%m-%d")
                     save_dir = os.path.join("json_dump", today_str, CONFIGURATOR_ID, str(scene_id))
                     os.makedirs(save_dir, exist_ok=True)
-                    
-                    file_name = f"scene_{scene_id}.json"
-                    file_path = os.path.join(save_dir, file_name)
-                    
-                    with open(file_path, 'wb') as f:
-                        f.write(clean_bytes)
+                    file_path = os.path.join(save_dir, f"scene_{scene_id}.json")
+                    with open(file_path, 'wb') as f: f.write(clean_bytes)
                     result["local_path"] = file_path
                 except Exception as disk_err:
                     print(f"     [!] Error saving file to disk: {disk_err}")
@@ -204,14 +215,10 @@ def get_scene_ancillary_data(session: requests.Session, scene_id: str) -> Dict[s
         resp = session.get(VIEWS_URL.format(scene_id=scene_id))
         if resp.status_code == 200:
             views = resp.json().get("results", [])
-            if views:
-                result["sceneview_id"] = str(views[0].get("id"))
-            else:
-                result["sceneview_id"] = scene_id
-        else:
-             result["sceneview_id"] = scene_id
-    except Exception:
-        result["sceneview_id"] = scene_id
+            if views: result["sceneview_id"] = str(views[0].get("id"))
+            else: result["sceneview_id"] = scene_id
+        else: result["sceneview_id"] = scene_id
+    except Exception: result["sceneview_id"] = scene_id
 
     return result
 
@@ -239,6 +246,9 @@ def patch_texture_property(session, item, field, value):
         return False
 
 def send_render_request(session, item, ancillary):
+    """
+    Sends a single render request for one texture.
+    """
     payload = {
         "configurator": CONFIGURATOR_ID,
         "scene": item['scene_id'],
@@ -276,6 +286,7 @@ def fetch_target_textures(session):
     target_scenes = SCENE_ID_LIST
     if not target_scenes:
         print_header("Fetching All Configurator Scenes")
+        # Using pagination now instead of forced per_page=1000
         scenes_data = get_paginated_data(session, SCENE_LIST_URL, "Scenes")
         target_scenes = [str(s['id']) for s in scenes_data]
         print(f"   > Total Scenes Found: {len(target_scenes)}")
@@ -292,6 +303,7 @@ def fetch_target_textures(session):
         for opt_id in options:
             current_op += 1
             query = f"scene={scene_id}" + (f"&sceneoption={opt_id}" if opt_id else "")
+            # We keep per_page=100 for textures as that's efficient, but could also rely on default
             url = f"{BASE_URL}/scene-texture/?{query}&per_page=100"
             try:
                 r = session.get(url) 
@@ -307,18 +319,15 @@ def fetch_target_textures(session):
                         page_res = data.get("results", [])
                         for item in page_res: item['fetched_for_scene_id'] = scene_id
                         all_textures.extend(page_res)
-                else:
-                    log_error(r, "Fetching Textures")
-            except Exception as e:
-                pass
+                else: log_error(r, "Fetching Textures")
+            except Exception: pass
             print_progress(current_op, total_ops, prefix="Scanning", suffix=f"Found: {len(all_textures)}")
     return all_textures
 
 def filter_matches(all_items, search_terms, require_enabled=False):
     matches = []
     filter_desc = search_terms if search_terms else 'All Items'
-    if require_enabled:
-        filter_desc = str(filter_desc) + " (Only Enabled)"    
+    if require_enabled: filter_desc = str(filter_desc) + " (Only Enabled)"    
     print_header(f"Filtering Results: {filter_desc}")
     
     search_lower = [t.lower() for t in search_terms] if search_terms else []
@@ -326,13 +335,11 @@ def filter_matches(all_items, search_terms, require_enabled=False):
     for item in all_items:
         name = item.get("display_name", "").lower()
         has_name_match = True
-        if search_lower:
-            has_name_match = any(term in name for term in search_lower)
+        if search_lower: has_name_match = any(term in name for term in search_lower)
         is_enabled = item.get("data", {}).get("is_enable")
         has_enabled_match = True
         if require_enabled:
-            if is_enabled is not True:
-                has_enabled_match = False
+            if is_enabled is not True: has_enabled_match = False
 
         if has_name_match and has_enabled_match:
             matches.append({
@@ -344,7 +351,6 @@ def filter_matches(all_items, search_terms, require_enabled=False):
                 "store": str(item.get("store")) if item.get("store") else None,
                 "sceneview": str(item.get("sceneview")) if item.get("sceneview") else None
             })
-            
     print(f"   > Matches Found: {len(matches)}")
     return matches
 
@@ -353,7 +359,6 @@ def run_patch_logic(session, matches):
     print("[B] is_updated")
     choice = input("Select Field: ").lower().strip()
     field = "is_enable" if choice == 'a' else "is_updated" if choice == 'b' else None
-    
     if not field: return
     
     val = input(f"Set {field} to (T)rue or (F)alse? ").lower().strip()
@@ -361,13 +366,15 @@ def run_patch_logic(session, matches):
     
     print_header(f"Patching {len(matches)} items")
     success_count = 0
-    
     for i, item in enumerate(matches):
         if patch_texture_property(session, item, field, bool_val):
             success_count += 1
         print_progress(i + 1, len(matches), prefix="Patching", suffix=f"Success: {success_count}")
 
 def run_render_logic(session, matches):
+    store_map = get_store_id_map_from_render_list(session)
+    
+    # Group by Scene
     scenes = {}
     for m in matches:
         s_id = m['scene_id']
@@ -376,28 +383,31 @@ def run_render_logic(session, matches):
     
     print_header(f"Preparing {len(matches)} Textures across {len(scenes)} Scenes")
     
+    # Global confirmation before running everything
+    confirm = input(">>> Ready to process ALL scenes and send ALL renders. Proceed? (y/n): ").strip().lower()
+    if confirm not in ['y', 'yes']:
+        print("Aborted.")
+        return
+
     total_processed = 0
     total_matches = len(matches)
-    
+
     for scene_id, items in scenes.items():
         print(f"\nProcessing Scene ID: {scene_id} ({len(items)} items)")
-        ancillary = get_scene_ancillary_data(session, scene_id)
+        
+        # Get JSON/Store data once per scene
+        ancillary = get_scene_ancillary_data(session, scene_id, store_map)
         
         if not ancillary['json_content']:
             print(f"     [SKIP] Scene {scene_id} has no valid JSON.")
             total_processed += len(items)
             continue
         
-        print(f"\nJSON parsed & saved for Scene {scene_id}.")
-        print(f"Ready to send render requests for {len(items)} textures.")
-        user_choice = input(">>> Do you want to SEND RENDERS for this scene? (y/n): ").strip().lower()
+        if not ancillary['store_id']:
+            print(f"     [WARNING] No Store ID found for Scene {scene_id}.")
 
-        if user_choice not in ['y', 'yes']:
-            print(f"     [SKIP] Skipping render requests for Scene {scene_id}.")
-            total_processed += len(items)
-            continue
-
-        print(f"     [GO] Sending {len(items)} requests...")
+        print(f"     [GO] Sending {len(items)} render requests for Scene {scene_id}...")
+        
         scene_processed = 0
         for item in items:
             send_render_request(session, item, ancillary)
@@ -412,14 +422,13 @@ def main():
 
     with requests.Session() as s:
         s.headers.update(DEFAULT_HEADERS)
-        
         while True:
             print_header("CONFIGURATOR TOOLBOX")
             print(f" ID: {CONFIGURATOR_ID} | Search: {TEXTURE_SEARCH_TERMS}")
             print(f" Target: {'ALL Scenes' if not SCENE_ID_LIST else f'{len(SCENE_ID_LIST)} Specific Scenes'}")
             print("-" * 60)
             print(" 1. Patch Texture Properties")
-            print(" 2. Send Renders (SKIPS DISABLED ITEMS)")
+            print(" 2. Send Renders (SKIPS DISABLED)")
             print(" 0. Exit")
             
             c = input("\n Choice > ").strip()
@@ -430,9 +439,8 @@ def main():
                 if not raw_data: 
                     print("No textures found.")
                     continue
-
-                only_enabled_flag = True if c == '2' else False
                 
+                only_enabled_flag = True if c == '2' else False
                 matches = filter_matches(raw_data, TEXTURE_SEARCH_TERMS, require_enabled=only_enabled_flag)
                 
                 if not matches:
