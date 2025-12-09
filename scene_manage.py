@@ -282,7 +282,7 @@ def fetch_target_textures(session):
         print_header("Fetching All Configurator Scenes")
         scenes_data = get_paginated_data(session, SCENE_LIST_URL, "Scenes")
         target_scenes = [str(s['id']) for s in scenes_data if s.get("is_enable")]
-        print(f"   > Total Scenes Found: {len(target_scenes)}")
+        print(f"   > Total Enabled Scenes Found: {len(target_scenes)} from Total: {len(scenes_data)}")
     
     if not target_scenes: return []
 
