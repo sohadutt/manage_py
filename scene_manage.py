@@ -83,9 +83,6 @@ def log_error(response: requests.Response, context: str):
 
 # --- NETWORK HELPERS ---
 def get_paginated_data(session: requests.Session, start_url: str, description: str = "Fetching data") -> List[Dict[str, Any]]:
-    """
-    Standard pagination: fetches page 1, then follows 'next_link' until exhausted.
-    """
     all_results = []
     current_url = start_url
     
@@ -246,9 +243,6 @@ def patch_texture_property(session, item, field, value):
         return False
 
 def send_render_request(session, item, ancillary):
-    """
-    Sends a single render request for one texture.
-    """
     payload = {
         "configurator": CONFIGURATOR_ID,
         "scene": item['scene_id'],
@@ -286,9 +280,8 @@ def fetch_target_textures(session):
     target_scenes = SCENE_ID_LIST
     if not target_scenes:
         print_header("Fetching All Configurator Scenes")
-        # Using pagination now instead of forced per_page=1000
         scenes_data = get_paginated_data(session, SCENE_LIST_URL, "Scenes")
-        target_scenes = [str(s['id']) for s in scenes_data]
+        target_scenes = [str(s['id']) for s in scenes_data if s.get("is_enable")]
         print(f"   > Total Scenes Found: {len(target_scenes)}")
     
     if not target_scenes: return []
