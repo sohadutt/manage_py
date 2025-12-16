@@ -10,11 +10,11 @@ from typing import List, Dict, Any
 
 # --- CONFIGURATION ---
 BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY1OTUwMzM3LCJpYXQiOjE3NjU4NjM5MzcsImp0aSI6ImFmNDVkOTU0MGEzODRhNjg4ODQ2MWE2ZDJhYjMxZmJkIiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.ADxKJsTBb1C2ky26XcofHT9x9ipSxjIkgPJrDAixROg"
-CONFIGURATOR_ID = "7060"
+CONFIGURATOR_ID = "7059"
 
 SCENE_ID_LIST = [] 
-SCENE_OPTION_ID_LIST = ["49971"] 
-TEXTURE_SEARCH_TERMS = ["Matte White", "Stainless Steel"] 
+SCENE_OPTION_ID_LIST = ["49960"] 
+TEXTURE_SEARCH_TERMS = ["Matte White", "Stainless Steel", "Gold"] 
 
 RENDER_CONFIG = {
     "aspect_ratio": "1.33",
@@ -301,9 +301,14 @@ def fetch_render_status_items(session, unique_store_ids):
                 total_scanned += 1
                 
                 # --- FILTERING LOGIC ---
-                # Strictly check if status is "3" (Failed)
                 status_val = str(item.get("status"))
+                scene_val = str(item.get("scene"))
                 
+                # 1. SCENE ID FILTER (If SCENE_ID_LIST is not empty)
+                if SCENE_ID_LIST and scene_val not in SCENE_ID_LIST:
+                    continue
+
+                # 2. STATUS FILTER (Strictly "3")
                 if status_val == "3":
                     failed_count += 1
                     if item.get("renders"):
@@ -313,6 +318,7 @@ def fetch_render_status_items(session, unique_store_ids):
                             "store_id": item.get("store"),
                             "status": status_val, 
                             "sceneoption": item.get("scene_option"),
+                            "scene": scene_val,
                             "original_data": item
                         })
     
@@ -320,6 +326,8 @@ def fetch_render_status_items(session, unique_store_ids):
     print(f" SCAN RESULTS:")
     print(f" Total Scanned: {total_scanned}")
     print(f" Failed (Status 3): {failed_count}")
+    if SCENE_ID_LIST:
+        print(f" (Filtered by {len(SCENE_ID_LIST)} specific scenes)")
     print("-" * 60)
     
     return collected_items
@@ -342,23 +350,16 @@ def run_send_failed_logic(session, matches):
         print(" [!] No Store IDs found. Cannot check render status.")
         return
 
-    # 2. Fetch Data (Includes Filtering for Status 3)
+    # 2. Fetch Data (Includes Filtering for Status 3 and Scene ID)
     render_list = fetch_render_status_items(session, unique_stores)
     
     if not render_list:
-        print("No FAILED (Status 3) items found.")
+        print("No FAILED items found matching criteria.")
         return
 
-    # 3. Deduplicate
-    unique_items = []
-    seen_ids = set()
-    for item in render_list:
-        rid = item.get("render_id")
-        if rid and rid not in seen_ids:
-            seen_ids.add(rid)
-            unique_items.append(item)
-    
-    print(f" [i] Found {len(render_list)} failed items. Unique Re-render IDs: {len(unique_items)}")
+    # 3. NO DEDUPLICATION (As requested)
+    items_to_process = render_list
+    print(f" [i] Found {len(items_to_process)} failed items (No deduplication).")
 
     # 4. Save Log
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -366,13 +367,13 @@ def run_send_failed_logic(session, matches):
     
     try:
         with open(log_filename, 'w', encoding='utf-8') as f:
-            json.dump(unique_items, f, indent=4)
+            json.dump(items_to_process, f, indent=4)
         print_header(f"Log Saved: {log_filename}")
     except Exception as e:
         print(f" [!] Failed to save log: {e}")
 
     # 5. SINGLE CONFIRMATION
-    print(f"\nReady to trigger re-renders for {len(unique_items)} FAILED items.")
+    print(f"\nReady to trigger re-renders for {len(items_to_process)} FAILED items.")
     confirm = input(" >>> Do you want to proceed? (y/n): ").strip().lower()
     
     if confirm not in ['y', 'yes']:
@@ -380,13 +381,14 @@ def run_send_failed_logic(session, matches):
         return
 
     success_count = 0
-    for i, item in enumerate(unique_items):
+    for i, item in enumerate(items_to_process):
         r_id = item['render_id']
         name = item['display_name']
+        s_id = item.get('scene', 'Unknown')
         
         if trigger_re_render(session, r_id):
             success_count += 1
-        print_progress(i + 1, len(unique_items), prefix="Re-rendering", suffix=f"OK: {success_count} | {name}")
+        print_progress(i + 1, len(items_to_process), prefix="Re-rendering", suffix=f"OK: {success_count} | {name} (Scene: {s_id})")
 
 # --- MAIN ---
 def fetch_target_textures(session):
