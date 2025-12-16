@@ -6,7 +6,7 @@ import time
 import os
 import gzip
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 # --- CONFIGURATION ---
 BEARER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY1OTUwMzM3LCJpYXQiOjE3NjU4NjM5MzcsImp0aSI6ImFmNDVkOTU0MGEzODRhNjg4ODQ2MWE2ZDJhYjMxZmJkIiwidXNlcl9pZCI6MTA3NDEsIm1lbWJlciI6MTE1NTgsIm9yZ2FuaXphdGlvbiI6MjI5NywiaXNfZW1haWxfdmVyaWZpZWQiOnRydWUsImFwcF90eXBlIjoiYmFzZSJ9.ADxKJsTBb1C2ky26XcofHT9x9ipSxjIkgPJrDAixROg"
@@ -259,20 +259,35 @@ def send_render_request(session, item, ancillary):
         return False
 
 # --- RE-RENDER LOGIC (OPTION 3) ---
-def trigger_re_render(session, render_id):
+def trigger_re_render(session, item_wrapper) -> Tuple[bool, str]:
+    render_id = item_wrapper.get("render_id")
+    original_data = item_wrapper.get("original_data", {})
+    
     multipart_data = {
-        "render_id": (None, str(render_id))
+        "render_id": (None, str(render_id)),
+        "data": (None, json.dumps(original_data)) 
     }
+    
     try:
         r = session.post(RE_RENDER_URL, files=multipart_data)
+        
+        # Parse Response
+        try:
+            resp_json = r.json()
+            message = resp_json.get("message", "No message provided")
+            # You can extract more fields from 'data' if needed here
+        except ValueError:
+            message = r.text[:100]
+
         r.raise_for_status()
-        return True
+        return True, message
+
     except requests.exceptions.HTTPError:
         log_error(r, f"Re-rendering ID {render_id}")
-        return False
+        return False, "HTTP Error"
     except Exception as e:
         print(f" [!] Error: {e}")
-        return False
+        return False, str(e)
 
 def fetch_render_status_items(session, unique_store_ids):
     collected_items = []
@@ -382,13 +397,20 @@ def run_send_failed_logic(session, matches):
 
     success_count = 0
     for i, item in enumerate(items_to_process):
-        r_id = item['render_id']
         name = item['display_name']
         s_id = item.get('scene', 'Unknown')
         
-        if trigger_re_render(session, r_id):
+        # Call trigger, now getting success status AND message
+        success, msg = trigger_re_render(session, item)
+        
+        if success:
             success_count += 1
-        print_progress(i + 1, len(items_to_process), prefix="Re-rendering", suffix=f"OK: {success_count} | {name} (Scene: {s_id})")
+            # Clear previous line and print success
+            print_progress(i + 1, len(items_to_process), prefix="Re-rendering", suffix=f"OK | {msg}")
+        else:
+            # Print failure on a NEW line so it's seen
+            sys.stdout.write('\n')
+            print(f" [X] Failed: {name} | Msg: {msg}")
 
 # --- MAIN ---
 def fetch_target_textures(session):
